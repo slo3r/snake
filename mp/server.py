@@ -14,8 +14,8 @@ PORT = 5555
 
 def reset_game():
     return {
-        1: {"pos": [(100, 100)], "dir": (0, 0), "alive": True, "score": 0, "fog_active": False, "fog_timer": 0},
-        2: {"pos": [(500, 300)], "dir": (-1, 0), "alive": True, "score": 0, "fog_active": False, "fog_timer": 0}
+        1: {"pos": [(100, 100)], "dir": (1, 0), "alive": True, "score": 0},
+        2: {"pos": [(500, 300)], "dir": (-1, 0), "alive": True, "score": 0}
     }
 
 players = reset_game()
@@ -35,14 +35,13 @@ FOG_DURATION = 5  # Duration of the fog effect in seconds
 
 
 def handle_client(conn, player_id):
-    global players, food_pos, powerup_pos, powerup_exists, fog_pos, fog_exists, game_over
+    global players, food_pos, powerup_pos, powerup_exists, fog_pos, fog_exists, game_over, MOVE_INTERVAL
     conn.send(pickle.dumps({
         "player_id": player_id,
         "state": players,
         "food": food_pos,
         "powerup": powerup_pos if powerup_exists else None,
-        "fog": fog_pos if fog_exists else None,
-        "game_over": game_over
+        "fog": fog_pos if fog_exists else None
     }))
 
     while True:
@@ -56,6 +55,7 @@ def handle_client(conn, player_id):
             elif data["action"] == "restart":
                 reset_players()
                 spawn_food()
+                MOVE_INTERVAL = 0.075
                 powerup_exists = False
                 powerup_pos = None
                 fog_exists = False
@@ -139,21 +139,33 @@ def game_loop():
             player_id += 1
 
         last_speed_up_time = time.time()
-
+        fog_start_time = None  # Initialize fog timing
+        
         while True:
             current_time = time.time()
 
-            # Check if a fog power-up needs to spawn
-            if not fog_exists and random.random() < 0.003:  # Adjust probability as needed
+            # Check fog duration independently
+            if fog_start_time and (current_time - fog_start_time) > FOG_DURATION:
+                # End fog effect and reset fog variables
+                for pid in players:
+                    players[pid]["fog_active"] = False  # Deactivate fog for each player
+                fog_exists = False  # Remove fog from the game
+                fog_pos = None      # Reset fog position
+                fog_start_time = None  # Reset fog start time
+            
+            # Spawn fog power-up occasionally
+            if not fog_exists and random.random() < 0.003:
                 spawn_fog()
+                fog_start_time = time.time()  # Start fog duration timer
 
-            # Gradually speed up the game (decrease MOVE_INTERVAL over time)
+            # Speed up game over time (unrelated to fog)
             if (current_time - last_speed_up_time) >= 10:
                 MOVE_INTERVAL = max(0.01, MOVE_INTERVAL - 0.005)
                 last_speed_up_time = current_time
                 print(f"Speeding up! New MOVE_INTERVAL: {MOVE_INTERVAL}")
 
-            if (current_time - last_move_time) >= MOVE_INTERVAL:
+            # Handle player movement based on MOVE_INTERVAL
+            if (current_time - last_move_time) >= MOVE_INTERVAL and not game_over:
                 for pid, pdata in players.items():
                     if pdata["alive"]:
                         head_x, head_y = pdata["pos"][0]
@@ -162,14 +174,12 @@ def game_loop():
 
                         # Check for fog power-up collision
                         if fog_exists and new_head == fog_pos:
-                            # Activate fog for both players when one collects the fog power-up
                             for other_pid in players:
-                                players[other_pid]["fog_active"] = True
-                                players[other_pid]["fog_timer"] = current_time
+                                players[other_pid]["fog_active"] = True  # Activate fog for all players
                             fog_exists = False  # Remove fog power-up
                             fog_pos = None      # Reset fog position
 
-                        # Check for food collision
+                        # Food collision
                         if new_head == food_pos:
                             pdata["pos"] = [new_head] + pdata["pos"]
                             pdata["score"] += 1
@@ -182,16 +192,17 @@ def game_loop():
                             if len(pdata["pos"]) > 1:
                                 pdata["pos"] = pdata["pos"][:len(pdata["pos"]) // 2]
                             powerup_exists = False
+                            powerup_pos = None
 
-                check_collisions()
-                last_move_time = current_time
+                check_collisions()  # Check if any collisions occurred
+                last_move_time = current_time  # Reset last movement time
 
-                # Send updated state to clients
+                # Send updated game state to clients
                 state = {
                     "state": players,
                     "food": food_pos,
                     "powerup": powerup_pos if powerup_exists else None,
-                    "fog_powerup": fog_pos if fog_exists else None,  # Send fog position if it exists
+                    "fog_powerup": fog_pos if fog_exists else None,
                     "game_over": game_over
                 }
                 for conn in clients.values():
@@ -201,9 +212,9 @@ def game_loop():
                         print(f"Error sending state to client: {e}")
                         continue
 
+                # Occasionally spawn power-up
                 if random.random() < 0.005:
                     spawn_powerup()
-
 
 if __name__ == "__main__":
     game_loop()
